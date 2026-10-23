@@ -1,0 +1,303 @@
+1. User & Shift Management
+
+model Role {
+  id          String   @id @default(uuid())
+  name        String   @unique // e.g., ADMIN, MANAGER, CASHIER
+  permissions Json     // Stores granular access rights
+  users       User[]
+}
+
+model User {
+  id             String   @id @default(uuid())
+  role_id        String
+  name           String
+  passcode_hash  String   // PIN or password for offline auth
+  is_active      Boolean  @default(true)
+  created_at     DateTime @default(now())
+
+  role           Role     @relation(fields: [role_id], references: [id])
+  shifts         Shift[]
+  orders         Order[]
+  audit_logs     AuditLog[]
+}
+
+model Shift {
+  id              String    @id @default(uuid())
+  user_id         String
+  opened_at       DateTime  @default(now())
+  closed_at       DateTime?
+  opening_balance Decimal   @db.Decimal(10, 2)
+  closing_balance Decimal?  @db.Decimal(10, 2)
+  status          String    // OPEN, CLOSED, RECONCILED
+
+  user            User      @relation(fields: [user_id], references: [id])
+  orders          Order[]
+}
+
+
+2. Menu & Catalog
+
+model Category {
+  id          String     @id @default(uuid())
+  name        String
+  is_active   Boolean    @default(true)
+  menu_items  MenuItem[]
+}
+
+model MenuItem {
+  id             String     @id @default(uuid())
+  category_id    String
+  name           String
+  description    String?
+  base_price     Decimal    @db.Decimal(10, 2)
+  tax_rate       Decimal    @db.Decimal(5, 2) // Percentage
+  is_available   Boolean    @default(true)
+  is_active      Boolean    @default(true)
+
+  category       Category   @relation(fields: [category_id], references: [id])
+  modifiers      ItemModifier[]
+  recipe         Recipe?
+  order_items    OrderItem[]
+}
+
+model ModifierGroup {
+  id          String    @id @default(uuid())
+  name        String    // e.g., "Size", "Add-ons", "Spice Level"
+  is_required Boolean   @default(false)
+  modifiers   Modifier[]
+}
+
+model Modifier {
+  id               String        @id @default(uuid())
+  group_id         String
+  name             String
+  price_adjustment Decimal       @default(0.00) @db.Decimal(10, 2)
+  
+  group            ModifierGroup @relation(fields: [group_id], references: [id])
+  item_links       ItemModifier[]
+}
+
+model ItemModifier {
+  id              String   @id @default(uuid())
+  menu_item_id    String
+  modifier_id     String
+  
+  menu_item       MenuItem @relation(fields: [menu_item_id], references: [id])
+  modifier        Modifier @relation(fields: [modifier_id], references: [id])
+}
+
+3. POS, Orders & Kitchen
+model Order {
+  id               String    @id @default(uuid()) // Unique transaction ID for offline safety
+  order_number     String    @unique // Human-readable (e.g., ORD-2026-1023-001)
+  shift_id         String
+  cashier_id       String
+  customer_id      String?
+  type             String    // DINE_IN, TAKEAWAY, DELIVERY
+  table_number     String?
+  status           String    // DRAFT, CONFIRMED, COMPLETED, CANCELLED, REFUNDED
+  
+  subtotal         Decimal   @db.Decimal(10, 2)
+  tax_total        Decimal   @db.Decimal(10, 2)
+  discount_total   Decimal   @db.Decimal(10, 2)
+  net_total        Decimal   @db.Decimal(10, 2)
+  
+  created_at       DateTime  @default(now())
+  updated_at       DateTime  @updatedAt
+
+  items            OrderItem[]
+  payments         Payment[]
+  kitchen_jobs     KitchenPrintJob[]
+  invoice          Invoice?
+}
+
+model OrderItem {
+  id               String    @id @default(uuid())
+  order_id         String
+  menu_item_id     String
+  quantity         Int
+  unit_price       Decimal   @db.Decimal(10, 2)
+  total_price      Decimal   @db.Decimal(10, 2)
+  notes            String?
+  
+  order            Order     @relation(fields: [order_id], references: [id])
+  menu_item        MenuItem  @relation(fields: [menu_item_id], references: [id])
+  applied_modifiers OrderItemModifier[]
+}
+
+model OrderItemModifier {
+  id               String    @id @default(uuid())
+  order_item_id    String
+  name             String    // Snapshot of modifier name
+  price_adjustment Decimal   @db.Decimal(10, 2) // Snapshot of price at time of order
+
+  order_item       OrderItem @relation(fields: [order_item_id], references: [id])
+}
+
+model Payment {
+  id               String    @id @default(uuid())
+  order_id         String
+  amount           Decimal   @db.Decimal(10, 2)
+  method           String    // CASH, CARD, LOYALTY_POINTS
+  status           String    // COMPLETED, REFUNDED
+  created_at       DateTime  @default(now())
+
+  order            Order     @relation(fields: [order_id], references: [id])
+}
+
+model Invoice {
+  id               String    @id @default(uuid())
+  order_id         String    @unique
+  invoice_number   String    @unique // Sequential fiscal invoice number
+  generated_at     DateTime  @default(now())
+  
+  order            Order     @relation(fields: [order_id], references: [id])
+}
+
+model KitchenPrintJob {
+  id               String    @id @default(uuid())
+  order_id         String
+  status           String    // PENDING, PRINTED, FAILED
+  retry_count      Int       @default(0)
+  created_at       DateTime  @default(now())
+  printed_at       DateTime?
+  error_log        String?
+
+  order            Order     @relation(fields: [order_id], references: [id])
+}
+
+4. Inventory & Supply Chain
+model InventoryItem {
+  id               String    @id @default(uuid())
+  name             String
+  sku              String?   @unique
+  unit_of_measure  String    // KG, LITER, PIECE, GRAM
+  current_stock    Decimal   @default(0) @db.Decimal(10, 3)
+  min_stock_level  Decimal   @default(0) @db.Decimal(10, 3)
+  cost_per_unit    Decimal   @default(0) @db.Decimal(10, 2)
+  is_active        Boolean   @default(true)
+
+  movements        StockMovement[]
+  recipe_links     RecipeIngredient[]
+  purchases        PurchaseItem[]
+}
+
+model Recipe {
+  id               String    @id @default(uuid())
+  menu_item_id     String    @unique
+  
+  menu_item        MenuItem  @relation(fields: [menu_item_id], references: [id])
+  ingredients      RecipeIngredient[]
+}
+
+model RecipeIngredient {
+  id                  String        @id @default(uuid())
+  recipe_id           String
+  inventory_item_id   String
+  quantity_required   Decimal       @db.Decimal(10, 3) // Amount deducted per sale
+
+  recipe              Recipe        @relation(fields: [recipe_id], references: [id])
+  inventory_item      InventoryItem @relation(fields: [inventory_item_id], references: [id])
+}
+
+model Supplier {
+  id               String    @id @default(uuid())
+  name             String
+  contact_info     String?
+  purchases        PurchaseRecord[]
+}
+
+model PurchaseRecord {
+  id               String    @id @default(uuid())
+  supplier_id      String
+  invoice_ref      String?
+  total_amount     Decimal   @db.Decimal(10, 2)
+  date             DateTime  @default(now())
+  status           String    // RECEIVED, PENDING
+
+  supplier         Supplier  @relation(fields: [supplier_id], references: [id])
+  items            PurchaseItem[]
+}
+
+model PurchaseItem {
+  id                  String        @id @default(uuid())
+  purchase_id         String
+  inventory_item_id   String
+  quantity            Decimal       @db.Decimal(10, 3)
+  unit_cost           Decimal       @db.Decimal(10, 2)
+
+  purchase            PurchaseRecord @relation(fields: [purchase_id], references: [id])
+  inventory_item      InventoryItem  @relation(fields: [inventory_item_id], references: [id])
+}
+
+model StockMovement {
+  id                  String        @id @default(uuid())
+  inventory_item_id   String
+  type                String        // SALE_DEDUCTION, PURCHASE_ADD, WASTAGE, MANUAL_ADJUST
+  quantity            Decimal       @db.Decimal(10, 3) // Positive or negative
+  reason              String?
+  reference_id        String?       // Links to Order.id or PurchaseRecord.id
+  created_by          String        // User ID
+  created_at          DateTime      @default(now())
+
+  inventory_item      InventoryItem @relation(fields: [inventory_item_id], references: [id])
+}
+
+5. Customer & Loyalty
+model Customer {
+  id               String    @id @default(uuid())
+  phone_number     String    @unique
+  name             String?
+  email            String?
+  total_points     Int       @default(0)
+  created_at       DateTime  @default(now())
+
+  orders           Order[]
+  loyalty_ledger   LoyaltyTransaction[]
+}
+
+model LoyaltyTransaction {
+  id               String    @id @default(uuid())
+  customer_id      String
+  order_id         String?
+  type             String    // EARN, REDEEM, REFUND_REVERSAL, MANUAL_ADJUST
+  points           Int       // Positive for EARN, negative for REDEEM
+  reason           String?
+  created_at       DateTime  @default(now())
+
+  customer         Customer  @relation(fields: [customer_id], references: [id])
+}
+
+6. System & Architecture
+
+model AuditLog {
+  id               String    @id @default(uuid())
+  user_id          String
+  action           String    // e.g., UPDATE_STOCK, DELETE_ORDER, REFUND
+  entity_type      String    // e.g., Order, InventoryItem
+  entity_id        String
+  old_value        Json?     // Snapshot of state before change
+  new_value        Json?     // Snapshot of state after change
+  created_at       DateTime  @default(now())
+
+  user             User      @relation(fields: [user_id], references: [id])
+}
+
+model AppSetting {
+  id               String    @id @default(uuid())
+  key              String    @unique // e.g., 'LOYALTY_EARN_RATE', 'CURRENCY'
+  value            String
+  updated_at       DateTime  @updatedAt
+}
+
+model SyncQueue {
+  id               String    @id @default(uuid())
+  entity_type      String    // e.g., Order, Customer
+  entity_id        String
+  action           String    // CREATE, UPDATE, DELETE
+  payload          Json      // Data to be synced to cloud
+  status           String    // PENDING, SYNCED, FAILED
+  retry_count      Int       @default(0)
+  created_at       DateTime  @default(now())
+  last_attempt_at  DateTime?
+}
